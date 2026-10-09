@@ -5,3 +5,4 @@ AGENTS.md
 .env.*
 !.env.example
 .DS_Store
+target/
