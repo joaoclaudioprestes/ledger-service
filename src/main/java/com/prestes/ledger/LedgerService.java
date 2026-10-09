@@ -31,12 +31,21 @@ public class LedgerService {
         return new Account(id, name);
     }
 
-    /** Balance = credits - debits. */
+    public static final UUID SYSTEM = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    public static class InsufficientFunds extends RuntimeException {
+        InsufficientFunds(String m) { super(m); }
+    }
+
     public long balance(UUID accountId) {
-        requireAccount(accountId);
-        return db.sql("""
-                SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount_cents ELSE -amount_cents END), 0)
-                FROM entries WHERE account_id = ?""").param(accountId).query(Long.class).single();
+        return db.sql("SELECT balance_cents FROM accounts WHERE id = ?").param(accountId).query(Long.class)
+                .optional().orElseThrow(() -> new NotFound("account " + accountId + " not found"));
+    }
+
+    /** Funds an account from the SYSTEM account. */
+    @Transactional
+    public UUID deposit(UUID account, long amountCents) {
+        return transfer(SYSTEM, account, amountCents);
     }
 
     public Page statement(UUID accountId, int page, int size) {
@@ -54,11 +63,29 @@ public class LedgerService {
         return new Page(items, page, size, total);
     }
 
-    /** Double entry: one debit on `from`, one credit on `to`, same transaction. Returns transaction id. */
+    /**
+     * Double entry: one debit on `from`, one credit on `to`, same transaction. Returns transaction id.
+     * Pessimistic locking: both rows are locked in id order (no deadlocks), so concurrent transfers on hot
+     * accounts serialize instead of conflicting and retrying (optimistic would starve under heavy contention).
+     */
     @Transactional
     public UUID transfer(UUID from, UUID to, long amountCents) {
-        requireAccount(from);
-        requireAccount(to);
+        var rows = db.sql("SELECT id, balance_cents, allow_negative FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE")
+                .params(from, to)
+                .query((rs, n) -> new Object[]{rs.getObject("id", UUID.class), rs.getLong("balance_cents"),
+                        rs.getBoolean("allow_negative")})
+                .list();
+        if (rows.size() < 2) {
+            for (var id : new UUID[]{from, to}) {
+                if (rows.stream().noneMatch(r -> r[0].equals(id))) throw new NotFound("account " + id + " not found");
+            }
+        }
+        var src = rows.stream().filter(r -> r[0].equals(from)).findFirst().orElseThrow();
+        if (!(boolean) src[2] && (long) src[1] < amountCents) {
+            throw new InsufficientFunds("account " + from + " has insufficient funds");
+        }
+        db.sql("UPDATE accounts SET balance_cents = balance_cents - ? WHERE id = ?").params(amountCents, from).update();
+        db.sql("UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?").params(amountCents, to).update();
         var tx = UUID.randomUUID();
         insert(tx, from, "DEBIT", amountCents);
         insert(tx, to, "CREDIT", amountCents);

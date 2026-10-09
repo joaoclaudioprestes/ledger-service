@@ -21,6 +21,8 @@ public class LedgerController {
     public record CreateAccount(@NotBlank @Size(max = 120) String name) {}
     public record Transfer(@NotNull UUID from, @NotNull UUID to, @Positive long amountCents) {}
 
+    public record Deposit(@Positive long amountCents) {}
+
     private final LedgerService service;
 
     public LedgerController(LedgerService service) {
@@ -49,6 +51,17 @@ public class LedgerController {
     Map<String, UUID> transfer(@Valid @RequestBody Transfer req) {
         if (req.from().equals(req.to())) throw new IllegalArgumentException("from and to must differ");
         return Map.of("transactionId", service.transfer(req.from(), req.to(), req.amountCents()));
+    }
+
+    @PostMapping("/accounts/{id}/deposits")
+    @ResponseStatus(HttpStatus.CREATED)
+    Map<String, UUID> deposit(@PathVariable UUID id, @Valid @RequestBody Deposit req) {
+        return Map.of("transactionId", service.deposit(id, req.amountCents()));
+    }
+
+    @ExceptionHandler(LedgerService.InsufficientFunds.class)
+    ProblemDetail insufficient(LedgerService.InsufficientFunds e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
     }
 
     @ExceptionHandler(LedgerService.NotFound.class)
