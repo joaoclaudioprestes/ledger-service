@@ -33,6 +33,11 @@ class LedgerTest {
         return UUID.fromString((String) r.getBody().get("id"));
     }
 
+    void deposit(UUID id, long cents) {
+        var r = http.postForEntity("/accounts/" + id + "/deposits", Map.of("amountCents", cents), Map.class);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
     void transfer(UUID from, UUID to, long cents) {
         var r = http.postForEntity("/transfers", Map.of("from", from, "to", to, "amountCents", cents), Map.class);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -47,11 +52,12 @@ class LedgerTest {
     void balanceMatchesSumOfEntriesAndLedgerNetsToZero() {
         var a = newAccount("a");
         var b = newAccount("b");
+        deposit(a, 1000);
         transfer(a, b, 1000);
         transfer(b, a, 250);
         transfer(a, b, 5);
 
-        assertThat(balance(a)).isEqualTo(-755);
+        assertThat(balance(a)).isEqualTo(245);
         assertThat(balance(b)).isEqualTo(755);
 
         long sumA = db.sql("SELECT SUM(CASE direction WHEN 'CREDIT' THEN amount_cents ELSE -amount_cents END) FROM entries WHERE account_id = ?")
@@ -67,11 +73,71 @@ class LedgerTest {
     void statementIsPaginated() {
         var a = newAccount("a");
         var b = newAccount("b");
+        deposit(a, 5);
         for (int i = 0; i < 5; i++) transfer(a, b, 1);
 
         var p = http.getForObject("/accounts/" + a + "/entries?page=1&size=2", Map.class);
         assertThat((java.util.List<?>) p.get("items")).hasSize(2);
-        assertThat(((Number) p.get("total")).longValue()).isEqualTo(5);
+        assertThat(((Number) p.get("total")).longValue()).isEqualTo(6);
+    }
+
+    @Test
+    void rejectsOverdraft() {
+        var a = newAccount("a");
+        deposit(a, 10);
+        var r = http.postForEntity("/transfers", Map.of("from", a, "to", newAccount("b"), "amountCents", 11), Map.class);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(balance(a)).isEqualTo(10);
+    }
+
+    @Test
+    void thousandConcurrentTransfersCloseExactBalance() throws Exception {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 500);
+        deposit(b, 500);
+        // 1000 transfers, a->b of 1 and b->a of 2 alternating, plus overdraft attempts must never go negative
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(50);
+        var ok = new java.util.concurrent.atomic.AtomicInteger();
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+        for (int i = 0; i < 1000; i++) {
+            boolean ab = i % 2 == 0;
+            futures.add(pool.submit(() -> {
+                var r = http.postForEntity("/transfers", ab ? Map.of("from", a, "to", b, "amountCents", 1)
+                        : Map.of("from", b, "to", a, "amountCents", 2), Map.class);
+                assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+                ok.incrementAndGet();
+            }));
+        }
+        for (var f : futures) f.get();
+        pool.shutdown();
+
+        assertThat(ok.get()).isEqualTo(1000);
+        // a: 500 - 500*1 + 500*2 = 1000 ; b: 500 + 500 - 1000 = 0
+        assertThat(balance(a)).isEqualTo(1000);
+        assertThat(balance(b)).isZero();
+        long total = db.sql("SELECT SUM(balance_cents) FROM accounts").query(Long.class).single();
+        assertThat(total).isZero(); // incl. SYSTEM (-1000): nothing created or lost
+    }
+
+    @Test
+    void concurrentOverdraftNeverGoesNegative() throws Exception {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 100);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(50);
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<HttpStatus>>();
+        for (int i = 0; i < 200; i++) {
+            futures.add(pool.submit(() -> HttpStatus.valueOf(http.postForEntity("/transfers",
+                    Map.of("from", a, "to", b, "amountCents", 1), Map.class).getStatusCode().value())));
+        }
+        long created = 0;
+        for (var f : futures) if (f.get() == HttpStatus.CREATED) created++;
+        pool.shutdown();
+
+        assertThat(created).isEqualTo(100);
+        assertThat(balance(a)).isZero();
+        assertThat(balance(b)).isEqualTo(100);
     }
 
     @Test
