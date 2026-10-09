@@ -1,4 +1,6 @@
 AGENTS.md
+.claude/
+.vscode/
 .env
 .env.*
 !.env.example
