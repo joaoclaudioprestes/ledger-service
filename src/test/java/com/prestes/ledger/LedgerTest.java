@@ -162,6 +162,24 @@ class LedgerTest {
         assertThat(((Number) p.get("total")).longValue()).isEqualTo(6);
     }
 
+    static final UUID SYSTEM = LedgerService.SYSTEM;
+
+    @Test
+    void systemAccountCannotBeUsedInTransfersOrDeposits() {
+        var a = newAccount("a");
+        long entries = db.sql("SELECT count(*) FROM entries").query(Long.class).single();
+        long sys = balance(SYSTEM);
+        var from = http.postForEntity("/transfers", Map.of("from", SYSTEM, "to", a, "amountCents", 100), Map.class);
+        var to = http.postForEntity("/transfers", Map.of("from", a, "to", SYSTEM, "amountCents", 100), Map.class);
+        var dep = http.postForEntity("/accounts/" + SYSTEM + "/deposits", Map.of("amountCents", 100), Map.class);
+        assertThat(from.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(to.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(dep.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(balance(a)).isZero();
+        assertThat(balance(SYSTEM)).isEqualTo(sys);
+        assertThat(db.sql("SELECT count(*) FROM entries").query(Long.class).single()).isEqualTo(entries);
+    }
+
     @Test
     void rejectsOverdraft() {
         var a = newAccount("a");
