@@ -9,7 +9,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -25,6 +29,68 @@ class LedgerTest {
 
     @Autowired TestRestTemplate http;
     @Autowired JdbcClient db;
+
+    @org.junit.jupiter.api.BeforeEach
+    void defaultKey() {
+        var interceptors = http.getRestTemplate().getInterceptors();
+        if (!interceptors.isEmpty()) return;
+        interceptors.add((req, body, ex) -> {
+            if (req.getURI().getPath().equals("/transfers") && !req.getHeaders().containsKey("Idempotency-Key")
+                    && req.getHeaders().getFirst("X-No-Key") == null) {
+                req.getHeaders().set("Idempotency-Key", UUID.randomUUID().toString());
+            }
+            return ex.execute(req, body);
+        });
+    }
+
+    ResponseEntity<Map> keyed(String key, Object body) {
+        var h = new HttpHeaders();
+        if (key != null) h.set("Idempotency-Key", key); else h.set("X-No-Key", "1");
+        return http.exchange("/transfers", HttpMethod.POST, new HttpEntity<>(body, h), Map.class);
+    }
+
+    @Test
+    void sameKeyTransfersOnce() {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 1000);
+        var body = Map.of("from", a, "to", b, "amountCents", 300);
+        var k = UUID.randomUUID().toString();
+        var r1 = keyed(k, body);
+        var r2 = keyed(k, body);
+        assertThat(r1.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(r2.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(r2.getBody()).isEqualTo(r1.getBody());
+        assertThat(balance(a)).isEqualTo(700);
+        assertThat(balance(b)).isEqualTo(300);
+    }
+
+    @Test
+    void sameKeyDifferentPayloadIs422AndMissingKeyIs400() {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 1000);
+        var k = UUID.randomUUID().toString();
+        assertThat(keyed(k, Map.of("from", a, "to", b, "amountCents", 100)).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(keyed(k, Map.of("from", a, "to", b, "amountCents", 200)).getStatusCode())
+                .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(keyed(null, Map.of("from", a, "to", b, "amountCents", 100)).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(balance(a)).isEqualTo(900);
+    }
+
+    @Test
+    void expiredKeyIsExecutedAgain() {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 1000);
+        var body = Map.of("from", a, "to", b, "amountCents", 100);
+        var k = UUID.randomUUID().toString();
+        keyed(k, body);
+        db.sql("UPDATE idempotency_keys SET expires_at = now() - interval '1 second' WHERE key = ?").param(k).update();
+        assertThat(keyed(k, body).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(balance(a)).isEqualTo(800);
+    }
 
     @SuppressWarnings("unchecked")
     UUID newAccount(String name) {
@@ -94,8 +160,8 @@ class LedgerTest {
     void thousandConcurrentTransfersCloseExactBalance() throws Exception {
         var a = newAccount("a");
         var b = newAccount("b");
-        deposit(a, 500);
-        deposit(b, 500);
+        deposit(a, 1000);
+        deposit(b, 1000);
         // 1000 transfers, a->b of 1 and b->a of 2 alternating, plus overdraft attempts must never go negative
         var pool = java.util.concurrent.Executors.newFixedThreadPool(50);
         var ok = new java.util.concurrent.atomic.AtomicInteger();
@@ -113,9 +179,9 @@ class LedgerTest {
         pool.shutdown();
 
         assertThat(ok.get()).isEqualTo(1000);
-        // a: 500 - 500*1 + 500*2 = 1000 ; b: 500 + 500 - 1000 = 0
-        assertThat(balance(a)).isEqualTo(1000);
-        assertThat(balance(b)).isZero();
+        // a: 1000 - 500*1 + 500*2 = 1500 ; b: 1000 + 500 - 1000 = 500
+        assertThat(balance(a)).isEqualTo(1500);
+        assertThat(balance(b)).isEqualTo(500);
         long total = db.sql("SELECT SUM(balance_cents) FROM accounts").query(Long.class).single();
         assertThat(total).isZero(); // incl. SYSTEM (-1000): nothing created or lost
     }

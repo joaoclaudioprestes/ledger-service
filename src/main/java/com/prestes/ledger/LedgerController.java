@@ -48,9 +48,10 @@ public class LedgerController {
 
     @PostMapping("/transfers")
     @ResponseStatus(HttpStatus.CREATED)
-    Map<String, UUID> transfer(@Valid @RequestBody Transfer req) {
+    Map<String, UUID> transfer(@RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String key,
+                               @Valid @RequestBody Transfer req) {
         if (req.from().equals(req.to())) throw new IllegalArgumentException("from and to must differ");
-        return Map.of("transactionId", service.transfer(req.from(), req.to(), req.amountCents()));
+        return Map.of("transactionId", service.transfer(key, req.from(), req.to(), req.amountCents()));
     }
 
     @PostMapping("/accounts/{id}/deposits")
@@ -61,6 +62,11 @@ public class LedgerController {
 
     @ExceptionHandler(LedgerService.InsufficientFunds.class)
     ProblemDetail insufficient(LedgerService.InsufficientFunds e) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
+    }
+
+    @ExceptionHandler(LedgerService.KeyConflict.class)
+    ProblemDetail keyConflict(LedgerService.KeyConflict e) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
     }
 
