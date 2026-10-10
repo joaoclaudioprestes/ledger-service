@@ -80,6 +80,13 @@ class LedgerTest {
     }
 
     @Test
+    void blankOrOversizedKeyIs400() {
+        var body = Map.of("from", UUID.randomUUID(), "to", UUID.randomUUID(), "amountCents", 100);
+        assertThat(keyed(" ", body).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(keyed("k".repeat(256), body).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
     void expiredKeyIsExecutedAgain() {
         var a = newAccount("a");
         var b = newAccount("b");
