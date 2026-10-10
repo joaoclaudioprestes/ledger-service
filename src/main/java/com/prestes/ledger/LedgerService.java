@@ -19,10 +19,14 @@ public class LedgerService {
         NotFound(String m) { super(m); }
     }
 
-    private final JdbcClient db;
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(LedgerService.class);
 
-    public LedgerService(JdbcClient db) {
+    private final JdbcClient db;
+    private final io.micrometer.core.instrument.MeterRegistry meters;
+
+    public LedgerService(JdbcClient db, io.micrometer.core.instrument.MeterRegistry meters) {
         this.db = db;
+        this.meters = meters;
     }
 
     @Transactional
@@ -67,7 +71,15 @@ public class LedgerService {
             if (!row[0].equals(hash)) throw new KeyConflict("Idempotency-Key reused with a different payload");
             return (UUID) row[1];
         }
-        return transfer(tx, from, to, amountCents);
+        try {
+            var id = transfer(tx, from, to, amountCents);
+            meters.counter("ledger.transfers", "outcome", "ok").increment();
+            log.info("transfer {} from={} to={} amountCents={}", id, from, to, amountCents);
+            return id;
+        } catch (RuntimeException e) {
+            meters.counter("ledger.transfers", "outcome", e.getClass().getSimpleName()).increment();
+            throw e;
+        }
     }
 
     static final int KEY_TTL_HOURS = 24;

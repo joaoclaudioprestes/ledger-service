@@ -3,6 +3,13 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/ledger}
     username: ${DB_USER:ledger}
     password: ${DB_PASSWORD:ledger}
+  threads.virtual.enabled: true
+  mvc.problemdetails.enabled: true
+logging:
+  structured.format.console: logstash # JSON; includes MDC traceId/spanId
 management:
   endpoints.web.exposure.include: health,prometheus
   metrics.distribution.percentiles-histogram.http.server.requests: true
+  tracing.sampling.probability: 1.0
+  otlp.tracing.endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+  observations.key-values.application: ledger-service
