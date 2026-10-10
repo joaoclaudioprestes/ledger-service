@@ -88,6 +88,13 @@ class LedgerTest {
     }
 
     @Test
+    void missingKeyIsProblemJson() {
+        var r = keyed(null, Map.of("from", UUID.randomUUID(), "to", UUID.randomUUID(), "amountCents", 100));
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(r.getHeaders().getContentType().toString()).startsWith("application/problem+json");
+    }
+
+    @Test
     void blankOrOversizedKeyIs400() {
         var body = Map.of("from", UUID.randomUUID(), "to", UUID.randomUUID(), "amountCents", 100);
         assertThat(keyed(" ", body).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);

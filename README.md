@@ -139,7 +139,9 @@ curl -s 'localhost:8080/accounts/<BOB>/entries?page=0&size=20'
 | `GET` | `/accounts/{id}/balance` | 200 | 404 |
 | `GET` | `/accounts/{id}/entries` | 200 (`page`, `size` ≤ 100) | 400, 404 |
 
-Domain errors (404, 422, constraint violations, same-account transfers) return RFC 7807 `ProblemDetail`. Malformed bodies and a missing `Idempotency-Key` header fall to Spring Boot's default error JSON.
+All errors (404, 422, constraint violations, same-account transfers, malformed bodies, missing `Idempotency-Key`) return RFC 9457 `ProblemDetail` (`application/problem+json`).
+
+**Traces:** `docker compose up`, call the API, then open Jaeger at http://localhost:16686 and pick service `ledger-service`.
 
 ---
 
