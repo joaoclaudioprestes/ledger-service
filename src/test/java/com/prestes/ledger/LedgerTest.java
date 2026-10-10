@@ -20,6 +20,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 @Testcontainers
+@org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class LedgerTest {
 
@@ -47,6 +48,13 @@ class LedgerTest {
         var h = new HttpHeaders();
         if (key != null) h.set("Idempotency-Key", key); else h.set("X-No-Key", "1");
         return http.exchange("/transfers", HttpMethod.POST, new HttpEntity<>(body, h), Map.class);
+    }
+
+    @Test
+    void exposesLatencyBuckets() {
+        http.getForEntity("/actuator/health", String.class);
+        var m = http.getForObject("/actuator/prometheus", String.class);
+        assertThat(m).contains("http_server_requests_seconds_bucket");
     }
 
     @Test
