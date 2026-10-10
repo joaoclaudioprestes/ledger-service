@@ -58,6 +58,7 @@ public class LedgerService {
      */
     @Transactional
     public UUID transfer(String key, UUID from, UUID to, long amountCents) {
+        rejectSystem(from, to);
         db.sql("DELETE FROM idempotency_keys WHERE key = ? AND expires_at < now()").param(key).update();
         var hash = from + ":" + to + ":" + amountCents;
         var tx = UUID.randomUUID();
@@ -92,7 +93,8 @@ public class LedgerService {
     /** Funds an account from the SYSTEM account. */
     @Transactional
     public UUID deposit(UUID account, long amountCents) {
-        return transfer(SYSTEM, account, amountCents);
+        rejectSystem(account);
+        return transfer(UUID.randomUUID(), SYSTEM, account, amountCents);
     }
 
     public Page statement(UUID accountId, int page, int size) {
@@ -117,6 +119,7 @@ public class LedgerService {
      */
     @Transactional
     public UUID transfer(UUID from, UUID to, long amountCents) {
+        rejectSystem(from, to);
         return transfer(UUID.randomUUID(), from, to, amountCents);
     }
 
@@ -145,6 +148,13 @@ public class LedgerService {
     private void insert(UUID tx, UUID account, String direction, long amount) {
         db.sql("INSERT INTO entries (id, transaction_id, account_id, direction, amount_cents) VALUES (?, ?, ?, ?, ?)")
                 .params(UUID.randomUUID(), tx, account, direction, amount).update();
+    }
+
+    /** SYSTEM may only be touched by deposit(); it allows negative balance, so any other use would mint money. */
+    private static void rejectSystem(UUID... accounts) {
+        for (var a : accounts) {
+            if (SYSTEM.equals(a)) throw new IllegalArgumentException("SYSTEM account cannot be used directly");
+        }
     }
 
     private void requireAccount(UUID id) {
