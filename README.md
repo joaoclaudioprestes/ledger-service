@@ -139,7 +139,7 @@ curl -s 'localhost:8080/accounts/<BOB>/entries?page=0&size=20'
 | `GET` | `/accounts/{id}/balance` | 200 | 404 |
 | `GET` | `/accounts/{id}/entries` | 200 (`page`, `size` ≤ 100) | 400, 404 |
 
-Errors use RFC 7807 `ProblemDetail`.
+Domain errors (404, 422, constraint violations, same-account transfers) return RFC 7807 `ProblemDetail`. Malformed bodies and a missing `Idempotency-Key` header fall to Spring Boot's default error JSON.
 
 ---
 
