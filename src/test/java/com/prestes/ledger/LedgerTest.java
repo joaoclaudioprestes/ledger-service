@@ -183,7 +183,7 @@ class LedgerTest {
         assertThat(balance(a)).isEqualTo(1500);
         assertThat(balance(b)).isEqualTo(500);
         long total = db.sql("SELECT SUM(balance_cents) FROM accounts").query(Long.class).single();
-        assertThat(total).isZero(); // incl. SYSTEM (-1000): nothing created or lost
+        assertThat(total).isZero(); // incl. SYSTEM (-2000): nothing created or lost
     }
 
     @Test
