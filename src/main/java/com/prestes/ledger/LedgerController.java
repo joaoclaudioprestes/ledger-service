@@ -56,8 +56,9 @@ public class LedgerController {
 
     @PostMapping("/accounts/{id}/deposits")
     @ResponseStatus(HttpStatus.CREATED)
-    Map<String, UUID> deposit(@PathVariable UUID id, @Valid @RequestBody Deposit req) {
-        return Map.of("transactionId", service.deposit(id, req.amountCents()));
+    Map<String, UUID> deposit(@RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String key,
+                              @PathVariable UUID id, @Valid @RequestBody Deposit req) {
+        return Map.of("transactionId", service.deposit(key, id, req.amountCents()));
     }
 
     @ExceptionHandler(LedgerService.InsufficientFunds.class)

@@ -59,8 +59,21 @@ public class LedgerService {
     @Transactional
     public UUID transfer(String key, UUID from, UUID to, long amountCents) {
         rejectSystem(from, to);
+        return idempotent(key, from + ":" + to + ":" + amountCents, tx -> {
+            try {
+                var id = transfer(tx, from, to, amountCents);
+                meters.counter("ledger.transfers", "outcome", "ok").increment();
+                log.info("transfer {} from={} to={} amountCents={}", id, from, to, amountCents);
+                return id;
+            } catch (RuntimeException e) {
+                meters.counter("ledger.transfers", "outcome", e.getClass().getSimpleName()).increment();
+                throw e;
+            }
+        });
+    }
+
+    private UUID idempotent(String key, String hash, java.util.function.UnaryOperator<UUID> operation) {
         db.sql("DELETE FROM idempotency_keys WHERE key = ? AND expires_at < now()").param(key).update();
-        var hash = from + ":" + to + ":" + amountCents;
         var tx = UUID.randomUUID();
         int inserted = db.sql("""
                 INSERT INTO idempotency_keys (key, request_hash, transaction_id, expires_at)
@@ -72,15 +85,7 @@ public class LedgerService {
             if (!row[0].equals(hash)) throw new KeyConflict("Idempotency-Key reused with a different payload");
             return (UUID) row[1];
         }
-        try {
-            var id = transfer(tx, from, to, amountCents);
-            meters.counter("ledger.transfers", "outcome", "ok").increment();
-            log.info("transfer {} from={} to={} amountCents={}", id, from, to, amountCents);
-            return id;
-        } catch (RuntimeException e) {
-            meters.counter("ledger.transfers", "outcome", e.getClass().getSimpleName()).increment();
-            throw e;
-        }
+        return operation.apply(tx);
     }
 
     static final int KEY_TTL_HOURS = 24;
@@ -90,11 +95,11 @@ public class LedgerService {
         db.sql("DELETE FROM idempotency_keys WHERE expires_at < now()").update();
     }
 
-    /** Funds an account from the SYSTEM account. */
+    /** Funds an account from the SYSTEM account; idempotent like transfer(key, ...). */
     @Transactional
-    public UUID deposit(UUID account, long amountCents) {
+    public UUID deposit(String key, UUID account, long amountCents) {
         rejectSystem(account);
-        return transfer(UUID.randomUUID(), SYSTEM, account, amountCents);
+        return idempotent(key, "deposit:" + account + ":" + amountCents, tx -> transfer(tx, SYSTEM, account, amountCents));
     }
 
     public Page statement(UUID accountId, int page, int size) {
