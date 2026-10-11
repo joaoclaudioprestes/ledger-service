@@ -19,9 +19,12 @@ import org.springframework.web.bind.annotation.*;
 public class LedgerController {
 
     public record CreateAccount(@NotBlank @Size(max = 120) String name) {}
-    public record Transfer(@NotNull UUID from, @NotNull UUID to, @Positive long amountCents) {}
+    /** Business ceiling per operation (1e12 cents = 10 billion units); keeps balances far from BIGINT overflow. */
+    static final long MAX_AMOUNT_CENTS = 1_000_000_000_000L;
 
-    public record Deposit(@Positive long amountCents) {}
+    public record Transfer(@NotNull UUID from, @NotNull UUID to, @Positive @Max(MAX_AMOUNT_CENTS) long amountCents) {}
+
+    public record Deposit(@Positive @Max(MAX_AMOUNT_CENTS) long amountCents) {}
 
     private final LedgerService service;
 

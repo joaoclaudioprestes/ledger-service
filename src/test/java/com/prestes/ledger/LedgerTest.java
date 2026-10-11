@@ -315,4 +315,28 @@ class LedgerTest {
         assertThat(http.getForEntity("/accounts/" + UUID.randomUUID() + "/balance", Map.class).getStatusCode())
                 .isEqualTo(HttpStatus.NOT_FOUND);
     }
+
+    @Test
+    void amountAboveCeilingIs400() {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        long over = LedgerController.MAX_AMOUNT_CENTS + 1;
+        assertThat(http.postForEntity("/accounts/" + a + "/deposits", Map.of("amountCents", over), Map.class).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(http.postForEntity("/transfers", Map.of("from", a, "to", b, "amountCents", over), Map.class).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void depositOverflowingBalanceIs422WithoutPartialPosting() {
+        var a = newAccount("a");
+        db.sql("UPDATE accounts SET balance_cents = ? WHERE id = ?").param(Long.MAX_VALUE - 5).param(a).update();
+        long entries = db.sql("SELECT count(*) FROM entries").query(Long.class).single();
+        long sys = balance(SYSTEM);
+        var r = http.postForEntity("/accounts/" + a + "/deposits", Map.of("amountCents", 10), Map.class);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(balance(a)).isEqualTo(Long.MAX_VALUE - 5);
+        assertThat(balance(SYSTEM)).isEqualTo(sys);
+        assertThat(db.sql("SELECT count(*) FROM entries").query(Long.class).single()).isEqualTo(entries);
+    }
 }
