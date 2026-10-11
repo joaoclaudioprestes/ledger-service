@@ -52,11 +52,18 @@ class ObservabilityTest {
         }
     }
 
+    void deposit(Object account, long cents) {
+        var h = jsonHeaders();
+        h.set("Idempotency-Key", UUID.randomUUID().toString());
+        http.exchange("/accounts/" + account + "/deposits", HttpMethod.POST,
+                new HttpEntity<>(Map.of("amountCents", cents), h), Map.class);
+    }
+
     @Test
     void transferTraceIdIsLoggedAndMetricsExposed(CapturedOutput out) {
         var a = account();
         var b = account();
-        http.postForEntity("/accounts/" + a + "/deposits", Map.of("amountCents", 100), Map.class);
+        deposit(a, 100);
         var h = jsonHeaders();
         h.set("Idempotency-Key", UUID.randomUUID().toString());
         http.exchange("/transfers", HttpMethod.POST,
@@ -70,7 +77,7 @@ class ObservabilityTest {
     void loadWithVirtualThreads() throws Exception {
         var a = account();
         var b = account();
-        http.postForEntity("/accounts/" + a + "/deposits", Map.of("amountCents", 1000), Map.class);
+        deposit(a, 1000);
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
             var futures = java.util.stream.IntStream.range(0, 500).mapToObj(i -> pool.submit(() -> {
                 var h = jsonHeaders();

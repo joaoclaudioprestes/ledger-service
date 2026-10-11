@@ -59,7 +59,7 @@ Key decisions:
 - **Materialized balance.** `accounts.balance_cents` is updated in the same transaction as the entries; a test checks it equals the sum of entries.
 - **Pessimistic locking.** Both account rows are locked with `SELECT ... FOR UPDATE` in id order: no deadlocks, and hot accounts serialize instead of retrying.
 - **Overdraft guard in two layers.** The service rejects it (422); a `CHECK` constraint backs it up in the DB.
-- **Idempotency.** `POST /transfers` requires an `Idempotency-Key`. The key is stored with a request hash in the transfer's own transaction: same key + same payload returns the original `transactionId`; same key + different payload returns 422. Keys expire after 24h and are purged hourly.
+- **Idempotency.** `POST /transfers` and `POST /accounts/{id}/deposits` require an `Idempotency-Key` (deposit hashes are prefixed `deposit:`, so a key never matches across the two). The key is stored with a request hash in the transfer's own transaction: same key + same payload returns the original `transactionId`; same key + different payload returns 422. Keys expire after 24h and are purged hourly.
 - **Money as integer cents** (`BIGINT`), never floats.
 
 ---
@@ -108,7 +108,7 @@ curl -s -X POST localhost:8080/accounts -H 'Content-Type: application/json' -d '
 curl -s -X POST localhost:8080/accounts -H 'Content-Type: application/json' -d '{"name":"bob"}'
 # {"id":"<BOB>","name":"bob"}
 
-curl -s -X POST localhost:8080/accounts/<ALICE>/deposits -H 'Content-Type: application/json' -d '{"amountCents":1000}'
+curl -s -X POST localhost:8080/accounts/<ALICE>/deposits -H 'Content-Type: application/json' -H 'Idempotency-Key: deposit-1' -d '{"amountCents":1000}'
 # {"transactionId":"<TX>"}
 ```
 
@@ -134,7 +134,7 @@ curl -s 'localhost:8080/accounts/<BOB>/entries?page=0&size=20'
 | Method | Path | Success | Errors |
 |---|---|---|---|
 | `POST` | `/accounts` | 201 | 400 |
-| `POST` | `/accounts/{id}/deposits` | 201 | 400, 404 |
+| `POST` | `/accounts/{id}/deposits` | 201 | 400, 404, 422 |
 | `POST` | `/transfers` | 201 | 400 (bad body / missing key / same account), 404, 422 (insufficient funds, key reused with different payload) |
 | `GET` | `/accounts/{id}/balance` | 200 | 404 |
 | `GET` | `/accounts/{id}/entries` | 200 (`page`, `size` ≤ 100) | 400, 404 |
@@ -165,6 +165,7 @@ They cover:
 - 1000 concurrent transfers closing on the exact balance
 - invalid transfers (400 / 404)
 - idempotency: same key transfers once, different payload 422, missing/blank/oversized key 400, expired key executes again
+- deposit idempotency: same key credits once (also under concurrency), different amount 422, missing key 400
 
 ---
 

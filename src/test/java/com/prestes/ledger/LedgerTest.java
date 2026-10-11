@@ -36,7 +36,7 @@ class LedgerTest {
         var interceptors = http.getRestTemplate().getInterceptors();
         if (!interceptors.isEmpty()) return;
         interceptors.add((req, body, ex) -> {
-            if (req.getURI().getPath().equals("/transfers") && !req.getHeaders().containsKey("Idempotency-Key")
+            if ((req.getURI().getPath().equals("/transfers") || req.getURI().getPath().endsWith("/deposits")) && !req.getHeaders().containsKey("Idempotency-Key")
                     && req.getHeaders().getFirst("X-No-Key") == null) {
                 req.getHeaders().set("Idempotency-Key", UUID.randomUUID().toString());
             }
@@ -85,6 +85,63 @@ class LedgerTest {
         assertThat(keyed(null, Map.of("from", a, "to", b, "amountCents", 100)).getStatusCode())
                 .isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(balance(a)).isEqualTo(900);
+    }
+
+    ResponseEntity<Map> keyedDeposit(String key, UUID id, long cents) {
+        var h = new HttpHeaders();
+        if (key != null) h.set("Idempotency-Key", key); else h.set("X-No-Key", "1");
+        return http.exchange("/accounts/" + id + "/deposits", HttpMethod.POST,
+                new HttpEntity<>(Map.of("amountCents", cents), h), Map.class);
+    }
+
+    @Test
+    void sameKeyDepositsOnce() {
+        var a = newAccount("a");
+        var k = UUID.randomUUID().toString();
+        var r1 = keyedDeposit(k, a, 500);
+        var r2 = keyedDeposit(k, a, 500);
+        assertThat(r1.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(r2.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(r2.getBody().get("transactionId")).isEqualTo(r1.getBody().get("transactionId"));
+        assertThat(balance(a)).isEqualTo(500);
+    }
+
+    @Test
+    void depositSameKeyDifferentAmountIs422AndMissingKeyIs400() {
+        var a = newAccount("a");
+        var k = UUID.randomUUID().toString();
+        assertThat(keyedDeposit(k, a, 500).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(keyedDeposit(k, a, 600).getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(keyedDeposit(null, a, 500).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(balance(a)).isEqualTo(500);
+    }
+
+    @Test
+    void depositAndTransferWithSameKeyDoNotCollide() {
+        var a = newAccount("a");
+        var b = newAccount("b");
+        deposit(a, 100);
+        var k = UUID.randomUUID().toString();
+        assertThat(keyed(k, Map.of("from", a, "to", b, "amountCents", 100)).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(keyedDeposit(k, a, 100).getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+
+    @Test
+    void concurrentDepositsWithSameKeyCreditOnce() throws Exception {
+        var a = newAccount("a");
+        var k = UUID.randomUUID().toString();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(20);
+        var futures = new java.util.ArrayList<java.util.concurrent.Future<ResponseEntity<Map>>>();
+        for (int i = 0; i < 20; i++) futures.add(pool.submit(() -> keyedDeposit(k, a, 100)));
+        var ids = new java.util.HashSet<Object>();
+        for (var f : futures) {
+            var r = f.get();
+            assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+            ids.add(r.getBody().get("transactionId"));
+        }
+        pool.shutdown();
+        assertThat(ids).hasSize(1);
+        assertThat(balance(a)).isEqualTo(100);
     }
 
     @Test
